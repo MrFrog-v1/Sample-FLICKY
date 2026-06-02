@@ -244,8 +244,8 @@ export function OverlayApp() {
 
           const bounds = displayRef.current?.bounds;
           const localTarget = {
-            x: el.x - (bounds?.x ?? 0),
-            y: el.y - (bounds?.y ?? 0),
+            x: (el.x / 1000) * (bounds?.width ?? 1920),
+            y: (el.y / 1000) * (bounds?.height ?? 1080),
           };
           setCompanionPosSync(localTarget);
           setCursorModeSync('navigating');
