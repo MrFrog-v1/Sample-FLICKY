@@ -242,11 +242,13 @@ export function OverlayApp() {
           setPointingPhrase(randomPhrase());
           setDetectedElement(el);
 
-          const bounds = displayRef.current?.bounds;
+          const b = displayRef.current?.bounds;
+          const w = window.innerWidth, h = window.innerHeight;
           const localTarget = {
-            x: (el.x / 1000) * (bounds?.width ?? 1920),
-            y: (el.y / 1000) * (bounds?.height ?? 1080),
+            x: (el.x / (b?.width ?? w)) * w,
+            y: (el.y / (b?.height ?? h)) * h,
           };
+          console.log(`[Overlay] el=(${el.x},${el.y}) bounds=${b?.width}x${b?.height} viewport=${w}x${h} dpr=${window.devicePixelRatio} target=(${localTarget.x.toFixed(1)},${localTarget.y.toFixed(1)})`);
           setCompanionPosSync(localTarget);
           setCursorModeSync('navigating');
 

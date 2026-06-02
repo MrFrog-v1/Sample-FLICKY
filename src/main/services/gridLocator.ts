@@ -1,6 +1,8 @@
-import { desktopCapturer, screen } from 'electron';
+import { desktopCapturer, screen, app } from 'electron';
 import { getApiKey } from './key-store';
 import * as settingsStore from './settings-store';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Percentage-based element locator.
@@ -249,39 +251,50 @@ const JPEG_QUALITY = 85;
 
 async function captureScreenshot(): Promise<{
   base64: string;
-  displayWidth: number;
-  displayHeight: number;
+  w: number;
+  h: number;
+  bounds: { x: number; y: number; width: number; height: number };
+  scaleFactor: number;
 } | null> {
   try {
-    const primaryDisplay = screen.getPrimaryDisplay();
-    const { width: displayWidth, height: displayHeight } = primaryDisplay.bounds;
+    const p = screen.getCursorScreenPoint();
+    const d = screen.getDisplayNearestPoint(p);
+    const b = d.bounds;
+    const f = d.scaleFactor || 1;
 
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
-      thumbnailSize: { width: MAX_WIDTH, height: Math.round(MAX_WIDTH * (displayHeight / displayWidth)) },
+      thumbnailSize: { width: MAX_WIDTH, height: Math.round(MAX_WIDTH * (b.height / b.width)) },
     });
 
-    // Find the source matching the primary display
-    const source = sources.find((s) => s.display_id === String(primaryDisplay.id)) ?? sources[0];
+    const source = sources.find((s) => s.display_id === String(d.id)) ?? sources[0];
     if (!source) return null;
 
-    const thumbnail = source.thumbnail;
-    const size = thumbnail.getSize();
+    const t = source.thumbnail;
+    const z = t.getSize();
 
-    // Resize if wider than MAX_WIDTH
-    let resized = thumbnail;
-    if (size.width > MAX_WIDTH) {
-      const scale = MAX_WIDTH / size.width;
-      resized = thumbnail.resize({
+    let r = t;
+    if (z.width > MAX_WIDTH) {
+      const s = MAX_WIDTH / z.width;
+      r = t.resize({
         width: MAX_WIDTH,
-        height: Math.round(size.height * scale),
+        height: Math.round(z.height * s),
       });
     }
 
-    const jpegBuffer = resized.toJPEG(JPEG_QUALITY);
+    const a = r.getSize();
+    const jpegBuffer = r.toJPEG(JPEG_QUALITY);
     const base64 = jpegBuffer.toString('base64');
 
-    return { base64, displayWidth, displayHeight };
+    try {
+      const dbg = path.join(app.getPath('userData'), 'debug-gridlocator.jpg');
+      fs.writeFileSync(dbg, jpegBuffer);
+      console.log(`[GridLocator] capture: display=${b.width}x${b.height}, scale=${f}, thumbDIP=${z.width}x${z.height}, resizedDIP=${a.width}x${a.height}, jpegBytes=${jpegBuffer.length}, saved=${dbg}`);
+    } catch {
+      console.log(`[GridLocator] capture: display=${b.width}x${b.height}, scale=${f}, thumbDIP=${z.width}x${z.height}, resizedDIP=${a.width}x${a.height}, jpegBytes=${jpegBuffer.length}`);
+    }
+
+    return { base64, w: a.width, h: a.height, bounds: b, scaleFactor: f };
   } catch (err) {
     console.error('[GridLocator] Screenshot capture failed:', err);
     return null;
@@ -304,11 +317,10 @@ export async function locateElement(
     return null;
   }
 
-  const { base64, displayWidth, displayHeight } = screenshot;
+  const { base64, w: iw, h: ih, bounds: sb, scaleFactor: sf } = screenshot;
   const prompt = LOCATE_PROMPT_TEMPLATE(query);
   const providers = getProviderCascade();
 
-  // Step 2: Try each provider in cascade order
   for (const provider of providers) {
     const apiKey = provider.getApiKey();
     if (!apiKey) {
@@ -316,7 +328,6 @@ export async function locateElement(
       continue;
     }
 
-    // Retry loop for each provider
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       console.log(`[GridLocator] Trying ${provider.name} (attempt ${attempt}/${MAX_RETRIES})`);
 
@@ -334,17 +345,16 @@ export async function locateElement(
         continue;
       }
 
-      // Step 3: Convert percentages to screen coordinates
-      const finalX = Math.round((coords.x / 100) * displayWidth);
-      const finalY = Math.round((coords.y / 100) * displayHeight);
+      const x = Math.round((coords.x / 100) * sb.width);
+      const y = Math.round((coords.y / 100) * sb.height);
 
       console.log(
         `[GridLocator] Success via ${provider.name}: ` +
-        `percentage=(${coords.x}, ${coords.y}) → pixel=(${finalX}, ${finalY}) ` +
-        `on ${displayWidth}x${displayHeight} display`,
+        `pct=(${coords.x}, ${coords.y}) imgDIP=${iw}x${ih} sf=${sf} ` +
+        `→ pixel=(${x}, ${y}) on ${sb.width}x${sb.height} (offset ${sb.x},${sb.y})`,
       );
 
-      return { x: finalX, y: finalY, label: query };
+      return { x, y, label: query };
     }
 
     console.log(`[GridLocator] ${provider.name} exhausted retries`);
