@@ -244,8 +244,8 @@ export function OverlayApp() {
 
           const w = window.innerWidth, h = window.innerHeight;
           const localTarget = {
-            x: (el.x / 100) * w,
-            y: (el.y / 100) * h,
+            x: (el.x / 1000) * w,
+            y: (el.y / 1000) * h,
           };
           setCompanionPosSync(localTarget);
           setCursorModeSync('navigating');

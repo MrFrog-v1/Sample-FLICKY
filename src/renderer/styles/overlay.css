@@ -13,8 +13,7 @@
   position: absolute;
   width: 20px;
   height: 20px;
-  margin-left: -2px;
-  margin-top: -2px;
+  transform: translate(-2px, -2px);
   filter:
     drop-shadow(0 4px 8px rgba(29, 78, 216, 0.45))
     drop-shadow(0 0 14px rgba(59, 130, 246, 0.35));
@@ -29,7 +28,7 @@
 }
 
 .cursor-triangle.navigating {
-  transform: scale(1.25);
+  transform: translate(-2px, -2px) scale(1.25);
 }
 
 /* ── Waveform Visualizer (positions the shared <Waveform>) ─────────── */

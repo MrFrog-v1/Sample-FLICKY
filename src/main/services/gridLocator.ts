@@ -71,7 +71,7 @@ function getProviderCascade(): ProviderConfig[] {
 // ── Vision model call ──────────────────────────────────────────────────
 
 const LOCATE_PROMPT_TEMPLATE = (query: string) =>
-  `The user asked: "${query}". Look at this screenshot and find that UI element. Reply ONLY with JSON: {"x": <0-100>, "y": <0-100>} where x is the horizontal percentage position (0=left edge, 100=right edge) and y is the vertical percentage position (0=top, 100=bottom). Nothing else.`;
+  `The user asked: "${query}". Look at this screenshot and find that UI element. Reply ONLY with JSON: {"x": <0-1000>, "y": <0-1000>} where x is the horizontal normalized position (0=left edge, 1000=right edge) and y is the vertical normalized position (0=top, 1000=bottom). Nothing else.`;
 
 async function askVisionProvider(
   base64Image: string,
