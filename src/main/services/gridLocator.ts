@@ -345,16 +345,11 @@ export async function locateElement(
         continue;
       }
 
-      const x = Math.round((coords.x / 100) * sb.width);
-      const y = Math.round((coords.y / 100) * sb.height);
-
       console.log(
-        `[GridLocator] Success via ${provider.name}: ` +
-        `pct=(${coords.x}, ${coords.y}) imgDIP=${iw}x${ih} sf=${sf} ` +
-        `→ pixel=(${x}, ${y}) on ${sb.width}x${sb.height} (offset ${sb.x},${sb.y})`,
+        `[GridLocator] Success via ${provider.name}: pct=(${coords.x}, ${coords.y})`,
       );
 
-      return { x, y, label: query };
+      return { x: coords.x, y: coords.y, label: query };
     }
 
     console.log(`[GridLocator] ${provider.name} exhausted retries`);
