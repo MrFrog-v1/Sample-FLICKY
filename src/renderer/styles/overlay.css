@@ -1,0 +1,148 @@
+/* ── Overlay Window Styles ───────────────────────────────────────────── */
+
+.overlay-container {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* ── Blue Cursor Triangle ───────────────────────────────────────────── */
+
+.cursor-triangle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  margin-left: -2px;
+  margin-top: -2px;
+  filter:
+    drop-shadow(0 4px 8px rgba(29, 78, 216, 0.45))
+    drop-shadow(0 0 14px rgba(59, 130, 246, 0.35));
+  transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform, left, top;
+}
+
+.cursor-triangle svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.cursor-triangle.navigating {
+  transform: scale(1.25);
+}
+
+/* ── Waveform Visualizer (positions the shared <Waveform>) ─────────── */
+
+.overlay-waveform {
+  position: absolute;
+  pointer-events: none;
+}
+
+/* ── Spinner ────────────────────────────────────────────────────────── */
+
+.processing-spinner {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--border-subtle);
+  border-top-color: var(--cursor-blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Pointing Label Bubble ──────────────────────────────────────────── */
+
+.pointing-bubble {
+  position: absolute;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--accent);
+  color: white;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-md);
+  white-space: nowrap;
+  animation: bubble-in 0.2s ease-out;
+  pointer-events: none;
+}
+
+/* ── Text Input Mode ────────────────────────────────────────────────── */
+
+.text-query-input {
+  position: absolute;
+  pointer-events: auto;
+  background: rgba(15, 15, 17, 0.95);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 10px 16px;
+  font-size: 15px;
+  font-family: inherit;
+  outline: none;
+  width: 280px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255,255,255,0.05) inset;
+  backdrop-filter: blur(12px);
+  animation: text-in 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.text-query-input:focus {
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(59, 130, 246, 0.5) inset, 0 0 12px rgba(59, 130, 246, 0.2);
+}
+
+.text-query-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
+}
+
+@keyframes text-in {
+  from { opacity: 0; transform: scale(0.95) translateY(4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+/* ── Response Text Bubble ──────────────────────────────────────────── */
+
+.response-bubble {
+  position: absolute;
+  max-width: 340px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding: 10px 14px;
+  background: rgba(10, 10, 14, 0.92);
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(59, 130, 246, 0.15) inset;
+  backdrop-filter: blur(16px);
+  pointer-events: none;
+  white-space: pre-wrap;
+  word-break: break-word;
+  animation: bubble-fade-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 1000;
+}
+
+/* Hide scrollbar but allow scroll */
+.response-bubble::-webkit-scrollbar {
+  width: 3px;
+}
+.response-bubble::-webkit-scrollbar-track {
+  background: transparent;
+}
+.response-bubble::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+
+@keyframes bubble-fade-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}

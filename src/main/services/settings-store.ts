@@ -1,0 +1,98 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { app } from 'electron';
+import { writeFileAtomic } from './fs-util';
+import type {
+  MindProvider,
+  GroqTranscriptionModel,
+  TranscriptionProviderType,
+  ReasoningDepth,
+  ReplyTone,
+  StreamVisibility,
+  StreamWindowBounds,
+  LocalConnection,
+} from '../../shared/types';
+
+/**
+ * Simple JSON-file settings store.
+ * Avoids the ESM-only `electron-store` v10 compatibility issues.
+ */
+
+export interface StoredSettings {
+  mindProvider: MindProvider;
+  reasoningDepth: ReasoningDepth;
+  replyTone: ReplyTone;
+
+  voiceId: string;
+  voiceSpeed: number;
+  voiceStability: number;
+  speakReplies: boolean;
+
+  groqTranscriptionModel: GroqTranscriptionModel;
+  transcriptionProvider: TranscriptionProviderType;
+
+  isClickyCursorEnabled: boolean;
+  launchAtLogin: boolean;
+  pushToTalkShortcut: string;
+  streamVisibility: StreamVisibility;
+  streamWindowBounds: StreamWindowBounds | null;
+
+  localConnections: LocalConnection[];
+
+  onboardingComplete: boolean;
+}
+
+const DEFAULTS: StoredSettings = {
+  mindProvider: 'gemini',
+  reasoningDepth: 'off',
+  replyTone: 'friendly',
+
+  voiceId: 'pNInz6obpgDQGcFmaJgB',
+  voiceSpeed: 1.0,
+  voiceStability: 0.5,
+  speakReplies: true,
+
+  groqTranscriptionModel: 'whisper-large-v3-turbo',
+  transcriptionProvider: 'groq',
+
+  isClickyCursorEnabled: true,
+  launchAtLogin: false,
+  pushToTalkShortcut: 'Ctrl+Alt+X',
+  streamVisibility: 'off',
+  streamWindowBounds: null,
+
+  localConnections: [],
+
+  onboardingComplete: false,
+};
+
+function getFilePath(): string {
+  return path.join(app.getPath('userData'), 'flicky-settings.json');
+}
+
+function read(): StoredSettings {
+  try {
+    const raw = fs.readFileSync(getFilePath(), 'utf-8');
+    return { ...DEFAULTS, ...JSON.parse(raw) };
+  } catch {
+    return { ...DEFAULTS };
+  }
+}
+
+function write(data: StoredSettings): void {
+  writeFileAtomic(getFilePath(), JSON.stringify(data, null, 2));
+}
+
+export function get<K extends keyof StoredSettings>(key: K): StoredSettings[K] {
+  return read()[key];
+}
+
+export function set<K extends keyof StoredSettings>(key: K, value: StoredSettings[K]): void {
+  const data = read();
+  data[key] = value;
+  write(data);
+}
+
+export function getAll(): StoredSettings {
+  return read();
+}

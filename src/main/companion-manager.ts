@@ -1,0 +1,575 @@
+import { app, systemPreferences, shell, desktopCapturer } from 'electron';
+import { GroqReasoningAPI } from './services/groq-reasoning-api';
+import { OpenRouterReasoningAPI } from './services/openrouter-reasoning-api';
+import { GeminiReasoningAPI } from './services/gemini-reasoning-api';
+import { OllamaAPI } from './services/ollama-api';
+import { ElevenLabsTTS } from './services/elevenlabs-tts';
+import { createTranscriptionProvider, type TranscriptionProvider } from './services/transcription';
+import { captureAllDisplays } from './services/screen-capture';
+import { parseLocateTag } from './services/element-detector';
+import { locateElement } from './services/gridLocator';
+import { ContextManager } from './services/context-manager';
+import * as settingsStore from './services/settings-store';
+import * as keyStore from './services/key-store';
+import * as chatHistory from './services/chat-history-store';
+import * as analytics from './services/analytics';
+import type {
+  VoiceState,
+  FlickySettings,
+  GroqTranscriptionModel,
+  TranscriptionResult,
+  DetectedElement,
+  ScreenCapture,
+  ApiKeyName,
+  ReasoningDepth,
+  ReplyTone,
+  MemoryStats,
+  ChatEntry,
+  StreamVisibility,
+  StreamWindowBounds,
+  MindProvider,
+} from '../shared/types';
+
+export interface CompanionCallbacks {
+  onVoiceStateChanged: (state: VoiceState) => void;
+  onTranscriptUpdate: (result: TranscriptionResult) => void;
+  onAiResponseChunk: (chunk: string) => void;
+  onAiResponseComplete: (fullText: string) => void;
+  onElementDetected: (element: DetectedElement | null) => void;
+  onLocateError: (message: string) => void;
+  onSettingsChanged: (settings: FlickySettings) => void;
+  onMemoryStatsChanged: (stats: MemoryStats) => void;
+  onChatEntryAdded: (entry: ChatEntry) => void;
+  onStartAudioCapture: () => void;
+  onStopAudioCapture: () => void;
+  onPlayAudio: (audioBuffer: Buffer) => void;
+  onCursorVisibilityChanged: (enabled: boolean) => void;
+  onStreamVisibilityChanged: (v: StreamVisibility) => void;
+  onToggleTextInput: () => void;
+}
+
+export class CompanionManager {
+  private callbacks: CompanionCallbacks;
+
+  private groqReasoning: GroqReasoningAPI;
+  private openRouterReasoning: OpenRouterReasoningAPI;
+  private geminiReasoning: GeminiReasoningAPI;
+  private ollama: OllamaAPI;
+  private tts: ElevenLabsTTS;
+  private context: ContextManager;
+  private transcriptionProvider: TranscriptionProvider | null = null;
+
+  private voiceState: VoiceState = 'idle';
+  private lastScreenshots: ScreenCapture[] = [];
+  private isRecording = false;
+  private reRegisterShortcut: ((accel: string) => boolean) | null = null;
+  /**
+   * Monotonic turn counter. A new PTT press bumps this; any still-running
+   * LLM callbacks from the previous turn check if their captured id still
+   * matches before they're allowed to mutate shared state.
+   */
+  private turnId = 0;
+  private currentAbort: AbortController | null = null;
+  /**
+   * If startRecording is in flight, other callers (typically a quick-release
+   * stopPushToTalk) await this before deciding whether to stop. Without it,
+   * stop can fire before `isRecording` has been flipped true, bail, and
+   * leave the mic running forever.
+   */
+  private pendingStart: Promise<void> | null = null;
+
+  constructor(callbacks: CompanionCallbacks) {
+    this.callbacks = callbacks;
+    this.groqReasoning = new GroqReasoningAPI();
+    this.openRouterReasoning = new OpenRouterReasoningAPI();
+    this.geminiReasoning = new GeminiReasoningAPI();
+    this.ollama = new OllamaAPI();
+    this.tts = new ElevenLabsTTS();
+    this.context = new ContextManager();
+
+    analytics.initAnalytics('', 'https://us.i.posthog.com');
+    analytics.trackAppOpened();
+  }
+
+  // ── Settings ─────────────────────────────────────────────────────────
+
+  getSettings(): FlickySettings {
+    const stored = settingsStore.getAll();
+    return {
+      ...stored,
+      apiKeyStatus: keyStore.getKeyStatus(),
+    };
+  }
+
+  setReasoningDepth(depth: ReasoningDepth): void {
+    settingsStore.set('reasoningDepth', depth);
+    this.emitSettings();
+  }
+
+  setReplyTone(tone: ReplyTone): void {
+    settingsStore.set('replyTone', tone);
+    this.emitSettings();
+  }
+
+  setVoiceId(id: string): void {
+    settingsStore.set('voiceId', id);
+    this.emitSettings();
+  }
+
+  setVoiceSpeed(speed: number): void {
+    settingsStore.set('voiceSpeed', speed);
+    this.emitSettings();
+  }
+
+  setVoiceStability(stability: number): void {
+    settingsStore.set('voiceStability', stability);
+    this.emitSettings();
+  }
+
+  setSpeakReplies(enabled: boolean): void {
+    settingsStore.set('speakReplies', enabled);
+    this.emitSettings();
+  }
+
+  setGroqModel(model: GroqTranscriptionModel): void {
+    settingsStore.set('groqTranscriptionModel', model);
+    this.emitSettings();
+  }
+
+  setMindProvider(provider: MindProvider): void {
+    settingsStore.set('mindProvider', provider);
+    this.emitSettings();
+  }
+
+  toggleCursor(enabled: boolean): void {
+    settingsStore.set('isClickyCursorEnabled', enabled);
+    this.callbacks.onCursorVisibilityChanged(enabled);
+    this.emitSettings();
+  }
+
+  setStreamVisibility(v: StreamVisibility): void {
+    settingsStore.set('streamVisibility', v);
+    this.callbacks.onStreamVisibilityChanged(v);
+    this.emitSettings();
+  }
+
+  setStreamWindowBounds(b: StreamWindowBounds): void {
+    settingsStore.set('streamWindowBounds', b);
+    this.emitSettings();
+  }
+
+  setShortcutReRegister(fn: (accel: string) => boolean): void {
+    this.reRegisterShortcut = fn;
+  }
+
+  setPushToTalkShortcut(accelerator: string): void {
+    const previous = settingsStore.get('pushToTalkShortcut');
+    if (!this.reRegisterShortcut) {
+      settingsStore.set('pushToTalkShortcut', accelerator);
+      this.emitSettings();
+      return;
+    }
+    const ok = this.reRegisterShortcut(accelerator);
+    if (ok) {
+      settingsStore.set('pushToTalkShortcut', accelerator);
+    } else {
+      console.warn('[Flicky] Failed to register shortcut', accelerator, '— reverting to', previous);
+      this.reRegisterShortcut(previous);
+    }
+    this.emitSettings();
+  }
+
+  setLaunchAtLogin(enabled: boolean): void {
+    settingsStore.set('launchAtLogin', enabled);
+    try {
+      app.setLoginItemSettings({ openAtLogin: enabled });
+    } catch (err) {
+      console.error('[Flicky] setLoginItemSettings failed:', err);
+    }
+    this.emitSettings();
+  }
+
+  completeOnboarding(): void {
+    settingsStore.set('onboardingComplete', true);
+    this.emitSettings();
+  }
+
+  replayOnboarding(): void {
+    settingsStore.set('onboardingComplete', false);
+    analytics.trackOnboardingReplayed();
+    this.emitSettings();
+  }
+
+  // ── Context / Memory ─────────────────────────────────────────────────
+
+  clearContext(): void {
+    this.context.clear();
+    this.emitMemoryStats();
+  }
+
+  async compactContext(): Promise<{ ok: boolean; error?: string }> {
+    if (!this.context.canCompact()) {
+      return { ok: false, error: 'Need at least two exchanges before compacting.' };
+    }
+    try {
+      await this.context.compact(true);
+      this.emitMemoryStats();
+      return { ok: true };
+    } catch (err) {
+      this.emitMemoryStats();
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
+  getMemoryStats(): MemoryStats {
+    return this.context.getStats();
+  }
+
+  // ── Chat history ─────────────────────────────────────────────────────
+
+  getChatHistory(): ChatEntry[] {
+    return chatHistory.getAll();
+  }
+
+  clearChatHistory(): void {
+    chatHistory.clear();
+  }
+
+  // ── API Keys ─────────────────────────────────────────────────────────
+
+  setApiKey(name: ApiKeyName, value: string): void {
+    keyStore.setApiKey(name, value);
+    this.emitSettings();
+  }
+
+  deleteApiKey(name: ApiKeyName): void {
+    keyStore.deleteApiKey(name);
+    this.emitSettings();
+  }
+
+  getApiKeyStatus(): Record<ApiKeyName, boolean> {
+    return keyStore.getKeyStatus();
+  }
+
+  // ── TTS preview ──────────────────────────────────────────────────────
+
+  async playVoicePreview(voiceId: string): Promise<void> {
+    try {
+      const buf = await this.tts.synthesize(
+        "hi, i'm flicky. i'll be using this voice to talk with you.",
+        {
+          voiceId,
+          speed: settingsStore.get('voiceSpeed'),
+          stability: settingsStore.get('voiceStability'),
+        },
+      );
+      this.callbacks.onPlayAudio(buf);
+    } catch (err) {
+      console.error('[Flicky] voice preview failed:', err);
+    }
+  }
+
+  // ── Permissions ──────────────────────────────────────────────────────
+
+  async getPermissions(): Promise<Record<string, boolean>> {
+    const perms: Record<string, boolean> = { microphone: false, screen: false };
+    if (process.platform === 'darwin') {
+      perms.microphone = systemPreferences.getMediaAccessStatus('microphone') === 'granted';
+      perms.screen = systemPreferences.getMediaAccessStatus('screen') === 'granted';
+    } else {
+      perms.microphone = true;
+      perms.screen = true;
+    }
+    return perms;
+  }
+
+  async requestPermission(kind: string): Promise<void> {
+    if (process.platform !== 'darwin') return;
+
+    if (kind === 'microphone') {
+      const status = systemPreferences.getMediaAccessStatus('microphone');
+      if (status === 'not-determined') {
+        await systemPreferences.askForMediaAccess('microphone');
+      } else if (status === 'denied' || status === 'restricted') {
+        shell.openExternal(
+          'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
+        );
+      }
+      return;
+    }
+
+    if (kind === 'screen') {
+      const status = systemPreferences.getMediaAccessStatus('screen');
+      if (status === 'not-determined') {
+        try {
+          await desktopCapturer.getSources({
+            types: ['screen'],
+            thumbnailSize: { width: 1, height: 1 },
+          });
+        } catch (err) {
+          console.error('[Flicky] screen permission probe failed:', err);
+        }
+      } else if (status === 'denied' || status === 'restricted') {
+        shell.openExternal(
+          'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
+        );
+      }
+    }
+  }
+
+  // ── Push-to-Talk Pipeline ────────────────────────────────────────────
+
+  async handlePushToTalk(): Promise<void> {
+    if (this.isRecording) await this.stopRecordingAndProcess();
+    else await this.startRecording();
+  }
+
+  async startPushToTalk(): Promise<void> {
+    if (this.isRecording || this.pendingStart) return;
+    const p = this.startRecording();
+    this.pendingStart = p;
+    try {
+      await p;
+    } finally {
+      if (this.pendingStart === p) this.pendingStart = null;
+    }
+  }
+
+  async stopPushToTalk(): Promise<void> {
+    if (this.pendingStart) {
+      try { await this.pendingStart; } catch { /* surfaced inside startRecording */ }
+    }
+    if (!this.isRecording) return;
+    await this.stopRecordingAndProcess();
+  }
+
+  toggleTextInput(): void {
+    // Send IPC to overlay to toggle text input mode
+    this.callbacks.onToggleTextInput?.(); // Need to add to callbacks!
+  }
+
+  async handleTextQuery(text: string): Promise<void> {
+    if (!text.trim()) return;
+    this.turnId += 1;
+    if (this.currentAbort) {
+      this.currentAbort.abort();
+      this.currentAbort = null;
+    }
+    await this.processQuery(text);
+  }
+
+  private async startRecording(): Promise<void> {
+    this.turnId += 1;
+    if (this.currentAbort) {
+      this.currentAbort.abort();
+      this.currentAbort = null;
+    }
+
+    this.isRecording = true;
+    this.setVoiceState('listening');
+    analytics.trackPushToTalkStarted();
+
+    const provider = settingsStore.get('transcriptionProvider');
+    this.transcriptionProvider = createTranscriptionProvider(provider);
+
+    this.transcriptionProvider.onPartialTranscript = (text) => {
+      this.callbacks.onTranscriptUpdate({ text, isFinal: false });
+    };
+
+    try {
+      await this.transcriptionProvider.start();
+      this.callbacks.onStartAudioCapture();
+    } catch (err) {
+      console.error('Failed to start transcription:', err);
+      this.setVoiceState('idle');
+      this.isRecording = false;
+    }
+  }
+
+  private async stopRecordingAndProcess(): Promise<void> {
+    this.isRecording = false;
+    this.callbacks.onStopAudioCapture();
+    analytics.trackPushToTalkReleased();
+
+    if (!this.transcriptionProvider) {
+      this.setVoiceState('idle');
+      return;
+    }
+
+    const result = await this.transcriptionProvider.stop();
+    this.transcriptionProvider = null;
+
+    if (!result.text.trim()) {
+      this.setVoiceState('idle');
+      return;
+    }
+
+    await this.processQuery(result.text);
+  }
+
+  private async processQuery(text: string): Promise<void> {
+    this.callbacks.onTranscriptUpdate({ text, isFinal: true });
+    analytics.trackUserMessageSent(text);
+
+    this.setVoiceState('processing');
+    try {
+      this.lastScreenshots = await captureAllDisplays();
+    } catch (err) {
+      console.error('Screen capture failed:', err);
+      this.lastScreenshots = [];
+    }
+
+    const settings = settingsStore.getAll();
+    const myTurnId = this.turnId;
+    const abort = new AbortController();
+    this.currentAbort = abort;
+
+    const isCurrent = () => this.turnId === myTurnId;
+
+    const mindCallbacks = {
+      onChunk: (chunk: string) => {
+        if (!isCurrent()) return;
+        this.callbacks.onAiResponseChunk(chunk);
+      },
+      onComplete: async (
+        fullText: string,
+        usage?: { inputTokens: number; outputTokens: number },
+      ) => {
+        if (!isCurrent()) return;
+        analytics.trackAiResponseReceived(fullText);
+
+        const cleanText = fullText.replace(/\[LOCATE:\s*[^\]]+\]/g, '').trim();
+        this.callbacks.onAiResponseComplete(cleanText);
+
+        await this.context.recordExchange(text, cleanText, {
+          inputTokens: usage?.inputTokens,
+          outputTokens: usage?.outputTokens,
+        });
+        if (!isCurrent()) return;
+        this.emitMemoryStats();
+
+        const entry = chatHistory.append({
+          userText: text,
+          assistantText: cleanText,
+        });
+        this.callbacks.onChatEntryAdded(entry);
+
+        // Check for [LOCATE:label] tag and run the dedicated grid locator
+        const locateLabel = parseLocateTag(fullText);
+        console.log('[Flicky] AI fullText:', fullText);
+        console.log('[Flicky] Locate label:', locateLabel);
+        if (locateLabel && isCurrent()) {
+          try {
+            const result = await locateElement(locateLabel);
+            if (!isCurrent()) return;
+            if (result) {
+              console.log('[Flicky] Grid locator found:', result);
+              this.callbacks.onElementDetected({
+                x: result.x,
+                y: result.y,
+                label: result.label,
+                screenIndex: 0,
+              });
+              analytics.trackElementPointed(result.label);
+            } else {
+              console.log('[Flicky] Grid locator failed — all providers exhausted');
+              this.callbacks.onLocateError("Couldn't locate that element");
+            }
+          } catch (err) {
+            console.error('[Flicky] Grid locator error:', err);
+            if (isCurrent()) {
+              this.callbacks.onLocateError("Couldn't locate that element");
+            }
+          }
+        }
+
+        if (settings.speakReplies && keyStore.getKeyStatus().elevenlabs) {
+          try {
+            const audioBuffer = await this.tts.synthesize(cleanText, {
+              voiceId: settings.voiceId,
+              speed: settings.voiceSpeed,
+              stability: settings.voiceStability,
+            });
+            if (!isCurrent()) return;
+            this.setVoiceState('responding');
+            this.callbacks.onPlayAudio(audioBuffer);
+          } catch (err) {
+            console.error('TTS error:', err);
+            analytics.trackTtsError(String(err));
+          }
+        }
+
+        if (!isCurrent()) return;
+        this.setVoiceState('idle');
+        setTimeout(() => {
+          if (isCurrent()) this.callbacks.onElementDetected(null);
+        }, 6000);
+      },
+      onError: (err: Error) => {
+        if (!isCurrent()) return;
+        console.error('Mind provider error:', err);
+        analytics.trackResponseError(err.message);
+        this.setVoiceState('idle');
+      },
+    };
+
+    const mindOptions = {
+      replyTone: settings.replyTone,
+      signal: abort.signal,
+    };
+
+    // Dispatch to the selected provider
+    if (settings.mindProvider === 'openrouter') {
+      await this.openRouterReasoning.streamChat(
+        text,
+        this.lastScreenshots,
+        this.context.getMessagesForSend(),
+        'meta-llama/llama-3.3-70b-instruct:free',
+        mindOptions,
+        mindCallbacks,
+      );
+    } else if (settings.mindProvider === 'gemini') {
+      await this.geminiReasoning.streamChat(
+        text,
+        this.lastScreenshots,
+        this.context.getMessagesForSend(),
+        'gemini-3.5-flash',
+        mindOptions,
+        mindCallbacks,
+      );
+    } else {
+      await this.groqReasoning.streamChat(
+        text,
+        this.lastScreenshots,
+        this.context.getMessagesForSend(),
+        'meta-llama/llama-4-scout-17b-16e-instruct',
+        mindOptions,
+        mindCallbacks,
+      );
+    }
+
+    if (this.currentAbort === abort) this.currentAbort = null;
+  }
+
+  handleAudioChunk(buffer: Buffer): void {
+    this.transcriptionProvider?.sendAudio(buffer);
+  }
+
+  // ── Internal ─────────────────────────────────────────────────────────
+
+  private setVoiceState(state: VoiceState): void {
+    this.voiceState = state;
+    this.callbacks.onVoiceStateChanged(state);
+  }
+
+  private emitSettings(): void {
+    this.callbacks.onSettingsChanged(this.getSettings());
+  }
+
+  private emitMemoryStats(): void {
+    this.callbacks.onMemoryStatsChanged(this.context.getStats());
+  }
+}

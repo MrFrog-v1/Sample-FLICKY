@@ -1,0 +1,31 @@
+node_modules/
+dist/
+release/
+.env
+*.env
+.env.*
+.DS_Store
+Thumbs.db
+*.log
+
+# Local-only files — never commit
+CLAUDE.md
+scratch-set-key.js
+.changelog/
+run.bat
+setup.bat
+
+# InsForge & AI agent skills
+.insforge
+.agent
+.agents
+.augment
+.claude
+.cline
+.github/copilot*
+.kilocode
+.qoder
+.qwen
+.roo
+.trae
+.windsurf
