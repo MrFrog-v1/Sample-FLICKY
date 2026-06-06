@@ -4,12 +4,6 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as fs from 'fs';
 import * as path from 'path';
 
-const K = [
-  process.env.GEMINI_FALLBACK_KEY_1,
-  process.env.GEMINI_FALLBACK_KEY_2,
-  process.env.GEMINI_FALLBACK_KEY_3,
-].filter(Boolean) as string[];
-
 export async function locateElement(query: string): Promise<{ x: number; y: number; label: string } | null> {
   const p = screen.getCursorScreenPoint();
   const d = screen.getDisplayNearestPoint(p);
@@ -38,7 +32,13 @@ export async function locateElement(query: string): Promise<{ x: number; y: numb
     fs.writeFileSync(dbg, jpegBuffer);
   } catch {}
 
-  const keys = [getApiKey('gemini'), ...K].filter(Boolean) as string[];
+  const keys = [
+    getApiKey('gemini'),
+    process.env.GEMINI_FALLBACK_KEY_1,
+    process.env.GEMINI_FALLBACK_KEY_2,
+  ].filter(Boolean) as string[];
+
+  console.log(`[GridLocator] ${keys.length} Gemini keys available`);
 
   for (let i = 0; i < keys.length; i++) {
     try {
